@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+*.wav
+*.mp3
+*.srt
+
+# generated transcription artifacts (keep only the .gitkeep structure)
+calls-inbox/*
+calls-process/*
+calls-failed/*
+calls-results/*
+!calls-inbox/.gitkeep
+!calls-process/.gitkeep
+!calls-failed/.gitkeep
+!calls-results/.gitkeep

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "transcriber"
+version = "0.2.3"
+description = "Audio transcription service with speaker diarization and a calls-inbox folder workflow (faster-whisper + pyannote)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "faster-whisper>=1.0.0",
+    "pyannote.audio>=3.1.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+# CTranslate2 dlopen()s libcublas.so.12 by soname and no CUDA pip package
+# declares it, so GPU inference needs this explicitly. Kept out of the base
+# install because the wheel is ~600 MB and pointless without a GPU.
+cuda = [
+    "nvidia-cublas-cu12>=12.9",
+]
+dev = [
+    "pytest>=8.0.0",
+    "hatchling>=1.25.0",
+    "ruff>=0.5.0",
+]
+
+[project.scripts]
+transcriber = "transcriber.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/transcriber"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+# Pinned rather than inherited: ruff's default rule set has changed between
+# releases, which would otherwise silently alter what `ruff check` enforces.
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
