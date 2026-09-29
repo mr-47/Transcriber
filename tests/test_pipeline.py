@@ -135,6 +135,18 @@ def test_recover_stale_moves_back_to_inbox(tmp_path):
     assert (tmp_path / "calls-inbox" / "call.mp3").exists()
 
 
+def test_recover_stale_ignores_dotfiles(tmp_path):
+    proc = _proc(tmp_path)
+    keep = tmp_path / "calls-process" / ".gitkeep"
+    keep.write_bytes(b"")
+
+    recovered = proc.recover_stale()
+
+    assert recovered == []
+    assert keep.exists()
+    assert not (tmp_path / "calls-inbox" / ".gitkeep").exists()
+
+
 def test_process_inbox_handles_each_file(tmp_path):
     proc = _proc(tmp_path, fail_names={"bad.wav"})
     good = tmp_path / "calls-inbox" / "good.mp3"

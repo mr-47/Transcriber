@@ -98,10 +98,10 @@ class CallFolderProcessor:
             folder.mkdir(parents=True, exist_ok=True)
 
     def recover_stale(self) -> list[Path]:
-        """Move leftover files in calls-process back to calls-inbox for retry."""
+        """Move leftover audio files in calls-process back to calls-inbox for retry."""
         recovered: list[Path] = []
         for item in self.processing.iterdir():
-            if item.is_file():
+            if item.is_file() and not item.name.startswith("."):
                 os.replace(item, self.inbox / item.name)
                 recovered.append(item)
         if recovered:
