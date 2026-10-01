@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "transcriber"
-version = "0.2.3"
+version = "1.0.0"
 description = "Audio transcription service with speaker diarization and a calls-inbox folder workflow (faster-whisper + pyannote)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,6 +15,11 @@ dependencies = [
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.29.0",
     "python-multipart>=0.0.9",
+    "anyio>=4.0.0",
+    # Decoding probe (probe_audio) so watch can tell "still being written" from
+    # "corrupt". Faster-whisper's optional av extra is not enough: this is a
+    # hard dependency of the folder workflow.
+    "av>=12.0.0",
 ]
 
 [project.optional-dependencies]

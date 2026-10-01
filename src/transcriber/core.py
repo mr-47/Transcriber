@@ -8,7 +8,7 @@ from importlib.util import find_spec
 from pathlib import Path
 
 from .config import TranscriberSettings
-from .merge import assign_speakers, build_utterances
+from .merge import absorb_tiny_turns, assign_speakers, build_utterances
 from .models import Segment, SpeakerTurn, Transcript, Word
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ def _preload_cublas() -> bool:
             ctypes.CDLL(str(candidate))
         except OSError as exc:
             logger.warning("Could not preload %s: %s", candidate, exc)
-            return False
+            continue
         logger.info("Preloaded %s so CTranslate2 can reach cuBLAS", candidate)
         return True
 
@@ -116,31 +116,24 @@ class Transcriber:
     def settings(self) -> TranscriberSettings:
         return self._settings
 
-    @property
-    def diarization_enabled(self) -> bool:
-        return self._settings.diarization_enabled
-
-    def _build_whisper_model(self, device: str, compute_type: str):
+    def _build_whisper_model(self, model: str, device: str, compute_type: str):
         from faster_whisper import WhisperModel
 
-        return WhisperModel(
-            self._settings.whisper_model,
-            device=device,
-            compute_type=compute_type,
-        )
+        return WhisperModel(model, device=device, compute_type=compute_type)
 
     def _get_whisper_model(self):
         if self._whisper_model is None:
             device = self._settings.whisper_device
             compute_type = self._settings.resolve_compute_type()
+            model = self._settings.resolve_whisper_model()
             logger.info(
                 "Loading whisper model %s (device=%s, compute_type=%s)",
-                self._settings.whisper_model,
+                model,
                 device,
                 compute_type,
             )
             try:
-                self._whisper_model = self._build_whisper_model(device, compute_type)
+                self._whisper_model = self._build_whisper_model(model, device, compute_type)
             except ValueError as exc:
                 if compute_type == "int8":
                     raise
@@ -149,16 +142,48 @@ class Transcriber:
                     compute_type,
                     exc,
                 )
-                self._whisper_model = self._build_whisper_model(device, "int8")
+                self._whisper_model = self._build_whisper_model(model, device, "int8")
         return self._whisper_model
 
     def _reload_whisper_cpu(self):
         logger.warning("CUDA inference unavailable; reloading whisper model on CPU")
-        self._whisper_model = self._build_whisper_model("cpu", "int8")
+        self._whisper_model = self._build_whisper_model(
+            self._settings.resolve_whisper_model(), "cpu", "int8"
+        )
         return self._whisper_model
 
+    @staticmethod
+    def _tune_pipeline(pipeline, settings: TranscriberSettings) -> None:
+        """Apply the optional diarization tuning knobs to a pyannote pipeline.
+
+        A knob at its default (-1) leaves the pretrained hyperparameter alone.
+        pyannote stores its configuration in ``hyperparameters``, so tuning is
+        a dict edit, not a re-instantiation; values that cannot reach that
+        structure (unknown versions) are skipped with a warning rather than
+        failing the whole transcription.
+        """
+        items = [
+            ("clustering", "threshold", settings.diarization_threshold),
+            ("segmentation", "min_duration_on", settings.diarization_min_duration_on),
+            ("segmentation", "min_duration_off", settings.diarization_min_duration_off),
+        ]
+        tuned = []
+        hyperparameters = getattr(pipeline, "hyperparameters", {})
+        for section, key, value in items:
+            if value is None or value < 0:
+                continue
+            try:
+                hyperparameters[section][key] = value
+                tuned.append(f"{section}.{key}={value}")
+            except (KeyError, TypeError) as exc:
+                logger.warning(
+                    "Could not tune diarization %s.%s=%s: %s", section, key, value, exc
+                )
+        if tuned:
+            logger.info("Tuning diarization: %s", ", ".join(tuned))
+
     def _get_diarization_pipeline(self):
-        if not self.diarization_enabled:
+        if not self._settings.diarization_enabled:
             return None
         if self._diarization_pipeline is None:
             from pyannote.audio import Pipeline
@@ -167,6 +192,7 @@ class Transcriber:
             pipeline = Pipeline.from_pretrained(
                 self._settings.diarization_model, token=self._settings.hf_token
             )
+            self._tune_pipeline(pipeline, self._settings)
             try:
                 import torch
 
@@ -177,43 +203,59 @@ class Transcriber:
             self._diarization_pipeline = pipeline
         return self._diarization_pipeline
 
-    def transcribe(self, audio_path: str, language: str | None = None) -> Transcript:
+    def transcribe(
+        self,
+        audio_path: str,
+        language: str | None = None,
+        word_timestamps: bool = True,
+    ) -> Transcript:
         with self._lock:
             whisper = self._get_whisper_model()
 
-            try:
-                segments_iter, info = whisper.transcribe(
+            def run_whisper(model):
+                # faster-whisper's ``transcribe`` returns a lazy generator: feature
+                # extraction and the first GPU encode happen on the first ``next()``,
+                # so a CUDA failure can surface while the segments are consumed, not
+                # only when the generator is created. Consume here, inside the guard,
+                # so a reload picks the failure up either way.
+                segments_iter, info = model.transcribe(
                     audio_path,
                     language=language,
-                    word_timestamps=True,
+                    word_timestamps=word_timestamps,
                 )
+                segments = [
+                    Segment(
+                        start=s.start,
+                        end=s.end,
+                        text=s.text.strip(),
+                        words=[Word(w.start, w.end, w.word) for w in (s.words or [])],
+                    )
+                    for s in segments_iter
+                    if s.text and s.text.strip()
+                ]
+                return segments, info
+
+            try:
+                segments, info = run_whisper(whisper)
             except RuntimeError as exc:
                 if self._settings.whisper_device == "cpu" or not _is_cuda_error(exc):
                     raise
                 whisper = self._reload_whisper_cpu()
-                segments_iter, info = whisper.transcribe(
-                    audio_path,
-                    language=language,
-                    word_timestamps=True,
-                )
-            segments = [
-                Segment(
-                    start=s.start,
-                    end=s.end,
-                    text=s.text.strip(),
-                    words=[Word(w.start, w.end, w.word) for w in (s.words or [])],
-                )
-                for s in segments_iter
-                if s.text and s.text.strip()
-            ]
+                segments, info = run_whisper(whisper)
 
             turns: list[SpeakerTurn] = []
             pipeline = self._get_diarization_pipeline()
             if pipeline is not None:
-                for turn, _, label in pipeline(audio_path):
+                kwargs = {}
+                if self._settings.diarization_num_speakers > 0:
+                    kwargs["num_speakers"] = self._settings.diarization_num_speakers
+                for turn, _, label in pipeline(audio_path, **kwargs):
                     turns.append(
                         SpeakerTurn(start=turn.start, end=turn.end, speaker=str(label))
                     )
+                turns = absorb_tiny_turns(
+                    turns, self._settings.diarization_min_region_seconds
+                )
 
             speakers = assign_speakers(segments, turns)
             utterances = build_utterances(segments, speakers)
@@ -225,3 +267,19 @@ class Transcriber:
                 segments=segments,
                 utterances=utterances,
             )
+
+    def close(self) -> None:
+        """Release loaded models so their GPU/CPU memory can be freed.
+
+        Drops the references faster-whisper and pyannote hold on their
+        allocation caches; a process would anyway -- this matters for a
+        long-running API worker that wants to hand VRAM back before shutdown.
+        """
+        self._whisper_model = None
+        self._diarization_pipeline = None
+
+    def __enter__(self) -> "Transcriber":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()

@@ -53,6 +53,35 @@ pip install -e ".[cuda]"
 > already matches an installed CUDA 13 build, so pip reports "already satisfied"
 > and silently leaves the incompatible build in place.
 
+### Windows
+
+From a checkout on Windows, run `install.cmd` (from `cmd`, or double-click it).
+It checks that Python 3.10+ is on PATH, creates `.venv`, offers the `cuda`
+extra when it detects an NVIDIA GPU via `nvidia-smi`, installs the package, and
+creates the `calls-*` folders:
+
+```batch
+install.cmd
+```
+
+Start the folder watcher with:
+
+```batch
+run.cmd
+```
+
+`run.cmd` passes anything you give it through to `transcriber watch`, so
+`run.cmd --once` drains the inbox and exits (handy for Task Scheduler),
+`run.cmd --format srt` changes the written formats, and so on. The default
+formats are `md,txt,html`; override with an environment
+`TRANSCRIBER_FORMATS=md,txt`.
+
+Use `install.cmd --cuda` / `--no-cuda` to force the CUDA choice instead of the
+probe. Diarization is enabled by setting the token persistently, which in cmd
+is `setx TRANSCRIBER_HF_TOKEN hf_...` (see below for the gated-model terms).
+Models still download into the Hugging Face cache on first run, exactly as on
+Linux.
+
 ### Diarization setup (required for speaker labels)
 
 pyannote's diarization models are gated on the Hugging Face Hub:
@@ -185,18 +214,27 @@ and the transcript file(s). The transcript format mirrors the CLI:
 `calls-failed/<name>.txt` — both the audio and the error keep the original file
 name, only the extension differs.
 
+A second recording that shares a name but not an extension (say `call.mp3` and
+`call.m4a`) would both claim `call.json`. The later one instead writes its
+transcripts as `call_m4a.*` (its extension folded into the stem), so neither
+result is lost; the same disambiguation applies to failure reports. A re-run
+over an existing result keeps the original name and overwrites it in place.
+
 Files that are still being written are left in `calls-inbox/` and retried on the
 next poll instead of failing immediately. The pipeline first checks that a
-file's size has stopped changing — i.e. the recorder has finished writing it
-(an m4a only becomes readable once its index is flushed at the end) — and only
-then does it decode and process it. If a file stays unreadable and unchanged in
-size for 3 consecutive scans, it is moved to `calls-failed/`.
+file's size and mtime have stopped changing — i.e. the recorder has finished
+writing it (an m4a only becomes readable once its index is flushed at the end) —
+and only then does it decode and process it. The mtime part also catches a
+source that *replaces* the file at the same byte size, which a size-only check
+would miss. If a file stays unreadable and unchanged for 3 consecutive scans,
+it is moved to `calls-failed/`.
 
 ```bash
 transcriber watch                      # poll calls-inbox every 5s forever
 transcriber watch --dir /data/calls    # use a different base directory
 transcriber watch --once               # drain the inbox once, then exit
 transcriber watch --interval 1         # poll faster
+transcriber watch --language ru        # hint the language on every file
 transcriber watch --format txt --layout sentence   # plain dialogue-style results
 
 # multiple formats at once (comma-separated or repeat the flag)
@@ -220,19 +258,32 @@ Interactive docs at http://localhost:8000/docs
 curl -X POST http://localhost:8000/transcribe \
   -F "file=@meeting.mp3" \
   -F "language=en"
+# omit word timestamps to shrink the response:
+curl -X POST "http://localhost:8000/transcribe?words=false" \
+  -F "file=@meeting.mp3"
 ```
 
-`GET /health` reports service status and whether diarization is enabled.
+`GET /health` reports service status, whether diarization is enabled, and the
+model/device/compute-type the running instance would use. Uploads with an
+unknown suffix and empty uploads are rejected with HTTP 400 before any model
+runs.
 
 ## Configuration (environment variables)
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `TRANSCRIBER_WHISPER_MODEL` | `small` | Whisper model size (`tiny`, `base`, `small`, `medium`, `large-v3`) or a local path |
+| `TRANSCRIBER_WHISPER_MODEL` | `small` | Whisper model size (`tiny`, `base`, `small`, `medium`, `large-v3`) or a local path. A path that does not exist fails with an actionable message instead of a retried download |
 | `TRANSCRIBER_WHISPER_DEVICE` | `auto` | `auto`, `cpu`, `cuda` |
 | `TRANSCRIBER_WHISPER_COMPUTE_TYPE` | `default` | `int8`, `float16`, `float32`, ...; CTranslate2's `default` picks a type the device supports and downgrades instead of failing. `float16` needs a GPU with fast FP16, so Pascal-era cards (e.g. GTX 1070) land on `float32` |
 | `TRANSCRIBER_DIARIZATION_MODEL` | `pyannote/speaker-diarization-3.1` | Diarization pipeline identifier |
 | `TRANSCRIBER_HF_TOKEN` | *(empty)* | Hugging Face read token for gated diarization models |
+| `TRANSCRIBER_DIAR_THRESHOLD` | *(unset)* | pyannote clustering threshold; lower splits more speakers, higher merges them. Leave unset for the pretrained default |
+| `TRANSCRIBER_DIAR_SPEAKERS` | *(unset)* | Fix the number of speakers (e.g. `2`); forces exactly that many clusters. Defaults to pyannote's automatic estimate |
+| `TRANSCRIBER_DIAR_MIN_ON` / `TRANSCRIBER_DIAR_MIN_OFF` | *(unset)* | Minimum speaker-region on/off durations in seconds (pyannote segmentation). Leave unset for defaults |
+| `TRANSCRIBER_DIAR_MIN_REGION` | `1.0` | Speakers whose *total* speech is below this many seconds are folded into their temporally nearest surviving speaker. Fixes sub-second singleton labels that fragment long meetings; `0` disables |
+
+A string variable set to an empty value behaves exactly as if it were unset,
+so the documented default applies.
 
 ## Output format
 
@@ -301,3 +352,42 @@ pip install -e ".[dev]"
 pytest
 ruff check src tests
 ```
+
+## Release checklist
+
+The unit suite injects stub engines, so it proves nothing about the real
+models. Before tagging a release, run the real pipeline once (network + a
+GPU or CPU are needed):
+
+```bash
+# 1. The version string surfaces everywhere.
+transcriber --version                     # transcriber 1.0.0
+python -c "import transcriber; print(transcriber.__version__)"
+
+# 2. Real ASR on a short real recording (tiny model; ~75 MB, no token).
+#    Generate some speech, e.g. `ffmpeg ...` or say a sentence into a mic.
+TRANSCRIBER_WHISPER_MODEL=tiny transcriber test.mp3 -o out.md --json out.json --words
+#    Accept: out.md renders, out.json has utterances + word arrays.
+
+# 3. Folder workflow end to end.
+mkdir -p calls-inbox && cp test.mp3 calls-inbox/
+TRANSCRIBER_WHISPER_MODEL=tiny transcriber watch --once --format md,txt,html,srt
+#    Accept: audio + call.json + the four formats land in calls-results/.
+
+# 4. API.
+uvicorn transcriber.api:app --port 8000 &
+curl -F "file=@test.mp3" http://localhost:8000/transcribe > /dev/null
+curl http://localhost:8000/health
+kill %1
+
+# 5. Diarization, only with an accepted gated model + token:
+#    TRANSCRIBER_HF_TOKEN=hf_... TRANSCRIBER_WHISPER_MODEL=tiny \
+#      transcriber test.mp3 -o out.md
+#    A two-party recording should yield at least two distinct SPEAKER_N labels.
+```
+
+On a GPU machine also confirm the CUDA path: with the `cuda` extra installed,
+`TRANSCRIBER_WHISPER_MODEL=tiny` should log `device=cuda` and no reload
+warning; without it, the run should fall back to `cpu,int8` with
+`WARNING ... reloading whisper model on CPU` and still produce a transcript.
+See AGENTS.md for the Windows installer checks.

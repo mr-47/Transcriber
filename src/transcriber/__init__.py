@@ -10,9 +10,12 @@ from .format import (
     to_markdown,
     to_srt,
     to_text,
-    wrap,
 )
-from .merge import assign_speakers, build_utterances
+from .merge import (
+    absorb_tiny_turns,
+    assign_speakers,
+    build_utterances,
+)
 from .models import (
     Segment,
     SpeakerTurn,
@@ -22,7 +25,7 @@ from .models import (
 )
 from .pipeline import CallFolderProcessor, watch_folders
 
-__version__ = "0.2.3"
+__version__ = "1.0.0"
 
 __all__ = [
     "FORMATS",
@@ -35,6 +38,7 @@ __all__ = [
     "Transcript",
     "Utterance",
     "Word",
+    "absorb_tiny_turns",
     "assign_speakers",
     "build_utterances",
     "render",
@@ -44,5 +48,4 @@ __all__ = [
     "to_srt",
     "to_text",
     "watch_folders",
-    "wrap",
 ]

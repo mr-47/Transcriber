@@ -1,3 +1,5 @@
+import pytest
+
 from transcriber.format import (
     render,
     split_sentences,
@@ -5,7 +7,6 @@ from transcriber.format import (
     to_markdown,
     to_srt,
     to_text,
-    wrap,
 )
 from transcriber.models import Transcript, Utterance
 
@@ -41,18 +42,21 @@ def test_split_sentences_strips_blanks():
     assert split_sentences("  Hello.  World.  ") == ["Hello.", "World."]
 
 
-def test_wrap_respects_width():
-    text = "one two three four five six seven eight"
-    assert len(wrap(text, width=10).splitlines()) > 1
-    assert wrap(text, width=100) == text
-
-
 def test_to_text_paragraph_alignment():
     text = "word " * 40
     out = to_text([_utt("SPEAKER_00", 5, 40, text)])
     first, *rest = out.splitlines()
     assert first.startswith("SPEAKER_00: ")
     assert all(line.startswith(" " * len("SPEAKER_00: ")) for line in rest)
+
+
+def test_to_text_skips_empty_utterances():
+    assert to_text([_utt("SPEAKER_00", 5, 40, "")]) == ""
+    mixed = [
+        _utt("SPEAKER_00", 5, 40, ""),
+        _utt("SPEAKER_01", 41, 50, "hi"),
+    ]
+    assert to_text(mixed) == "SPEAKER_01: hi"
 
 
 def test_to_text_paragraph_breaks_at_sentence_boundaries():
@@ -153,6 +157,29 @@ def test_srt_chunk_timestamps_are_proportional():
     assert second_end == 6.0
     assert abs(first_end - 2.0 - 3.0) < 1e-6
     assert abs(second_start - first_end) < 1e-6
+
+
+def test_to_srt_skips_empty_utterance_text():
+    """A whitespace-only utterance must not emit a (broken) subtitle block."""
+    mixed = [
+        _utt("SPEAKER_00", 0, 1, "   "),
+        _utt("SPEAKER_01", 1, 2, "hi"),
+    ]
+    out = to_srt(mixed)
+    blocks = [b for b in out.split("\n\n") if b]
+    assert len(blocks) == 1
+    assert "SPEAKER_01" in blocks[0]
+
+
+def test_to_srt_renders_nothing_for_all_empty():
+    out = to_srt([_utt("SPEAKER_00", 0, 1, "  ")])
+    assert out == ""
+
+
+@pytest.mark.parametrize("words_per_caption", [0, -3])
+def test_to_srt_rejects_a_non_positive_caption_size(words_per_caption):
+    with pytest.raises(ValueError, match="words_per_caption"):
+        to_srt([_utt("SPEAKER_00", 0, 1, "hello")], words_per_caption=words_per_caption)
 
 
 def test_srt_custom_words_per_caption():

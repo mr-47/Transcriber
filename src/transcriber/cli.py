@@ -6,6 +6,7 @@ import logging
 import sys
 from pathlib import Path
 
+from . import __version__
 from .config import TranscriberSettings
 from .core import Transcriber
 from .format import FORMATS, render
@@ -13,12 +14,45 @@ from .pipeline import CallFolderProcessor, watch_folders
 
 DEFAULT_FORMAT = "md"
 
+VERSION_STRING = f"transcriber {__version__}"
+
+
+def _add_version_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--version", action="version", version=VERSION_STRING)
+
+
+def _positive_int(value: str) -> int:
+    """argparse type for counts that must be >= 1.
+
+    ``--caption-words 0`` reaches ``range(0, n, 0)`` and dies with a bare
+    ValueError, and a negative value writes an empty subtitle file that looks
+    like a successful run. Rejecting here names the actual problem.
+    """
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a whole number, got {value!r}") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be 1 or greater, got {number}")
+    return number
+
+
+def _positive_float(value: str) -> float:
+    try:
+        number = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a number, got {value!r}") from None
+    if number <= 0:
+        raise argparse.ArgumentTypeError(f"must be greater than 0, got {number}")
+    return number
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="transcriber",
         description="Transcribe audio files and attribute speech to speakers (diarization).",
     )
+    _add_version_flag(parser)
     parser.add_argument("audio", help="Path to the input audio file (mp3, wav, m4a, ...)")
     parser.add_argument(
         "-o", "--output", type=Path,
@@ -46,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--caption-words",
-        type=int,
+        type=_positive_int,
         default=6,
         help="Max words per SRT caption (subtitles are split into short 5-7 word lines; default: 6)",
     )
@@ -72,6 +106,7 @@ def build_watch_parser() -> argparse.ArgumentParser:
         prog="transcriber watch",
         description="Watch calls-inbox and process every new audio file through the calls-* folders.",
     )
+    _add_version_flag(parser)
     parser.add_argument(
         "--dir",
         default=".",
@@ -84,7 +119,7 @@ def build_watch_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--interval",
-        type=float,
+        type=_positive_float,
         default=5.0,
         help="Poll interval in seconds (default: 5)",
     )
@@ -103,7 +138,7 @@ def build_watch_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--caption-words",
-        type=int,
+        type=_positive_int,
         default=6,
         help="Max words per SRT caption (subtitle lines; default: 6)",
     )
@@ -138,8 +173,14 @@ def _handle_transcript(argv: list[str]) -> int:
     if args.no_diarization:
         settings.hf_token = ""
 
-    transcriber = Transcriber(settings)
-    result = transcriber.transcribe(args.audio, language=args.language)
+    with Transcriber(settings) as transcriber:
+        result = transcriber.transcribe(
+            args.audio,
+            language=args.language,
+            # Word timestamps are only ever serialised by `--json --words`;
+            # skip the expensive word-level alignment otherwise.
+            word_timestamps=bool(args.json and args.words),
+        )
 
     if args.json:
         payload = json.dumps(
@@ -158,7 +199,18 @@ def _handle_transcript(argv: list[str]) -> int:
 
     if args.output:
         output = args.output
-        if not output.suffix:
+        if output.suffix:
+            extension = output.suffix.lower().lstrip(".")
+            if extension not in FORMATS:
+                # The flag is honoured (the user pointed at this file), but an
+                # unknown extension no longer silently picks a format: writing
+                # markdown into `report.mp3` looked like a corrupt recording.
+                print(
+                    f"transcriber: warning: {extension!r} is not a transcript format; "
+                    f"writing {fmt} content to {output}",
+                    file=sys.stderr,
+                )
+        else:
             output = Path(f"{output}.{fmt}")
         output.write_text(content + "\n", encoding="utf-8")
     else:
@@ -188,35 +240,38 @@ def _parse_watch_formats(raw: list[str] | None) -> list[str]:
 def _handle_watch(argv: list[str]) -> int:
     args = build_watch_parser().parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
-
     settings = TranscriberSettings()
     if args.model:
         settings.whisper_model = args.model
     if args.no_diarization:
         settings.hf_token = ""
 
-    transcriber = Transcriber(settings)
-    try:
-        formats = _parse_watch_formats(args.format)
-    except ValueError as exc:
-        parser = build_watch_parser()
-        parser.error(str(exc))
-    processor = CallFolderProcessor(
-        transcriber,
-        args.dir,
-        output_formats=formats,
-        layout=args.layout,
-        words_per_caption=args.caption_words,
-    )
-    processed = watch_folders(processor, interval=args.interval, once=args.once)
+    with Transcriber(settings) as transcriber:
+        try:
+            formats = _parse_watch_formats(args.format)
+        except ValueError as exc:
+            parser = build_watch_parser()
+            parser.error(str(exc))
+        processor = CallFolderProcessor(
+            transcriber,
+            args.dir,
+            output_formats=formats,
+            layout=args.layout,
+            words_per_caption=args.caption_words,
+            language=args.language,
+        )
+        processed = watch_folders(processor, interval=args.interval, once=args.once)
     logging.getLogger(__name__).info("Finished, processed %d file(s)", processed)
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
+    # One-shot transcription loads a multi-hundred-MB model and can spend
+    # minutes downloading it on the first run; silence would look like a hang.
+    # Configure once for both commands.
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] == "watch":
         return _handle_watch(args[1:])

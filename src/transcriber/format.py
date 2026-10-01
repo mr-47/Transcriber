@@ -36,6 +36,13 @@ def _fmt_clock(seconds: float) -> str:
     return f"{secs // 60:02d}:{secs % 60:02d}"
 
 
+def _require_positive_caption_size(words_per_caption: int) -> None:
+    if words_per_caption < 1:
+        raise ValueError(
+            f"words_per_caption must be at least 1, got {words_per_caption}"
+        )
+
+
 def split_sentences(text: str) -> list[str]:
     """Split text into sentences on `. ! ? …` boundaries.
 
@@ -53,16 +60,6 @@ def split_sentences(text: str) -> list[str]:
         start = match.end()
     parts.append(text[start:].strip())
     return [part for part in parts if part]
-
-
-def wrap(text: str, width: int = DEFAULT_WIDTH) -> str:
-    normalized = " ".join(text.split())
-    return textwrap.fill(
-        normalized,
-        width=width,
-        break_long_words=False,
-        break_on_hyphens=False,
-    )
 
 
 def _wrap_sentences(text: str, width: int) -> list[str]:
@@ -116,6 +113,8 @@ def to_text(
 ) -> str:
     lines = []
     for u in utterances:
+        if not u.text:
+            continue
         prefix = f"{u.speaker}: "
         if timestamps:
             prefix = f"[{_fmt_clock(u.start)}] {prefix}"
@@ -191,6 +190,7 @@ def to_srt(utterances: list[Utterance], words_per_caption: int = 6) -> str:
     """
     blocks = []
     index = 1
+    _require_positive_caption_size(words_per_caption)
     for u in utterances:
         words = u.text.split()
         if not words:
