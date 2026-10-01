@@ -2,9 +2,13 @@
 
 Handoff notes for OpenCode working on Transcriber. This file intentionally
 documents only what is **not** derivable from reading the code. Layout, module
-responsibilities, CLI flags, API shape and the env-var reference all live in
-`README.md` — read that first, then come back here for the parts that took real
-work to learn (or real work to keep working).
+responsibilities, CLI flags, API shape and the env-var reference live in
+`README.md` and the `docs/` tree (`docs/README-docs-index.md` lists them) —
+read those first, then come back here for the parts that took real work to
+learn (or real work to keep working). The `docs/` split mirrors the sibling
+VoxPipe project's doc structure: README is the landing page, deep reference
+lives per topic in `docs/`, and `docs/development.md` carries the maintainer
+material (suite, wine checks, release checklist).
 
 ## What this project is
 
@@ -309,15 +313,18 @@ Do not "fix" these; they are expected and were looked into.
 - **A `.venv` that will not start after the checkout moves** is expected; its
   scripts bake in absolute paths. Recreate it; never move or patch it.
 - **Docs drift silently.** The README's env table, feature claims and folder
-  names are maintained by hand. When behaviour changes, grep the `.md` files
-  for the changed flag/path/env var rather than trusting the prose. The prior
-  `TRANSCRIBER_WHISPER_MODEL=""` fix (empty→default) was a real behaviour
-  change to keep README truth aligned with.
+  names are maintained by hand, and reference detail lives in `docs/`. When
+  behaviour changes, grep the `.md` files for the changed flag/path/env var
+  rather than trusting the prose. The prior `TRANSCRIBER_WHISPER_MODEL=""` fix
+  (empty→default) was a real behaviour change to keep README truth aligned
+  with. The `docs/` split and the README-Documentation tables were applied in
+  the same pass; keep new deep material in `docs/` instead of re-expanding the
+  README.
 
 ## Working agreement
 
-- Do not commit unless asked. The 1.0 release changes are not committed yet;
-  make that commit deliberately.
+- Do not commit unless asked. The 1.0 release is committed and pushed; the
+  docs restructure in the same session is a plausible next commit.
 - Keep `Transcriber` as the engine name and the lock holder; if parallelising
   ever happens, those two assumptions break first.
 - `.venv/`, `calls-*/*` (except their `.gitkeep` files), `.pytest_cache/`,
