@@ -390,4 +390,7 @@ On a GPU machine also confirm the CUDA path: with the `cuda` extra installed,
 `TRANSCRIBER_WHISPER_MODEL=tiny` should log `device=cuda` and no reload
 warning; without it, the run should fall back to `cpu,int8` with
 `WARNING ... reloading whisper model on CPU` and still produce a transcript.
-See AGENTS.md for the Windows installer checks.
+On a card without fast FP16 (Pascal/Maxwell-era) the load-time warning
+`compute type inferred from the saved model is float16 ... converted to
+float32` is **expected** — that is the documented compute downgrade, not the
+CPU-reload path. See AGENTS.md for the Windows installer checks.
